@@ -1,0 +1,337 @@
+import numpy as np
+from keras.layers import Conv1D, MaxPooling1D, Embedding, Dropout, Activation, Dense, Dropout, Flatten
+from keras import optimizers
+from keras.callbacks import EarlyStopping, ModelCheckpoint
+from keras.preprocessing import sequence
+from keras.utils import np_utils
+from keras.models import Sequential
+from string import punctuation
+from keras.models import model_from_json
+from collections import Counter
+import matplotlib.pyplot as plt
+
+#---------------
+# preprocessing
+#---------------
+# Load data
+
+# read data from text files
+def read_data(input_path,target_path=None,phase='train'):
+    '''
+     To read the dataset and labels 
+     
+    :param input_path: train/test filepath
+    :param target_path: target filepath
+    :param phase: train/test
+    :return:list of passages,list of targets 
+    '''
+    print('1.Reading inputs..........')
+    labels=[]
+    with open(input_path, 'r') as f:
+        novels = f.read()        
+    if phase == 'train':   
+        with open(target_path, 'r') as f:
+            labels = f.read()
+    return novels,labels  
+    
+#process train dataset
+def process_train(labels,lst_novels):
+    '''
+    This function removes empty labels and corresponding passages from train dataset
+    
+    :param labels: 
+    :param lst_novels: 
+    :return: 
+    '''
+    #remove empty labels
+    labels=list(filter(None,labels))
+    print('length of labels',len(labels))
+    #remove sentences without labels
+    novels=[]
+    for text,lbl in list(zip(lst_novels,labels)):
+        novels.append(text)            
+    print('length of novels',len(novels))    
+#     print(labels[0:2],novels[0:2])
+    return labels,novels   
+
+# convert char sequences to integer sequences
+def char_to_int(text,char_to_idx,max_len):
+    '''
+    -converts characters to integars by mapping to the character dictionary 
+    -pad the integar list with zeros if the length of the integar list is less than maxlength
+    
+    :param text: passage
+    :param char_to_idx: dict
+    :param max_len: max length of the passages in the dataset 
+    :return: padded integar list
+    '''
+    lst_chars=list(text)
+    lst_chars_ints = list(map(lambda char: char_to_idx[char], lst_chars))
+    #pad sentences with 0 if length(lst_chars_ints) < max_len
+    return sequence.pad_sequences([lst_chars_ints], maxlen=max_len)[0]
+
+
+def transform_data(lst_text,unique_chars,labels=None,trn_max_len=None):
+    '''
+    -Creates character mapping dictionary 
+    -Converts character to integar list
+    -Convert input and labels into integars
+    -Sets the max length of test dataset if not equal to that of train dataset
+    
+    :param lst_text: passage list
+    :param unique_chars: unique characters in the dataset
+    :param labels: target list
+    :param trn_max_len: max length of train dataset
+    :return: inputs,targets,max length 
+    '''
+    #Build a dictionary that maps characters to integers and vice versa   
+    char_to_idx = {char: ii for ii, char in enumerate(unique_chars, 1)}
+    idx_to_char = {ii: char for ii, char in enumerate(unique_chars, 1)} 
+    print('list of chars:\n', unique_chars)
+    
+    '''
+    Get max length of sentences
+    '''
+    max_len = 0
+    for sentence in (lst_text):
+        if len(sentence) > max_len:
+            max_len = len(sentence)
+            
+    input_data = []
+    targets=[]
+    
+    #create train dataset
+    if labels: 
+        for txt,lbl in zip(lst_text, labels):            
+            input_data.append(char_to_int(txt,char_to_idx,max_len))
+            targets.append(lbl)
+            
+        input_data=np.asarray(input_data)
+        targets=np_utils.to_categorical(np.array(targets)).astype(np.bool)
+    #create test dataset    
+    else:
+        for txt in lst_text:
+            '''
+            if maxlength of sentences in test set is not equal to train set
+            set it to max_length of train_set
+            '''
+            if max_len != trn_max_len:
+                max_len = trn_max_len
+            input_data.append(char_to_int(txt,char_to_idx,max_len))  
+        input_data=np.asarray(input_data)
+ 
+    return input_data,targets,max_len
+
+def get_unique_chars(lst_novels):
+    '''
+    get unique characters from the dataset 
+    '''
+    chars=''
+    for doc in lst_novels:
+        for s in doc:
+            chars += s
+    counts = Counter(chars)  
+    lst_chars = sorted(counts, key=counts.get, reverse=True)
+    return lst_chars
+    
+#preprocess text and labels    
+def pre_process(novels,labels=None,phase='train',trn_max_char=None,trn_max_seq_len=None):
+    '''
+    Pre process and prepare data for training or testing
+    
+    :param novels: list of data
+    :param labels: targets
+    :param phase: train/test 
+    :param trn_max_char:train_max_char 
+    :param trn_max_seq_len: trn_max_seq_len
+    :return:input_data,targets,max_chars,max_seq_len   
+    '''
+    print('2.Preprocessing inputs..........')
+  
+    novels = novels.lower() # lowercase 
+    lst_novels = novels.split('\n')#split into sentences
+    lst_novels = [c for c in lst_novels if c not in punctuation] # get rid of punctuation    
+    
+#     lst_chars_unique=list(set(' '.join(lst_novels)))
+    lst_chars_unique =  list(filter(None, get_unique_chars(lst_novels)))
+    max_chars = len(lst_chars_unique)
+    
+    #labels are None for test dataset
+    if phase=='train':
+        labels=labels.split('\n')
+        labels,lst_novels=process_train(labels,lst_novels)
+        input_data,targets,max_seq_len=transform_data(lst_novels,lst_chars_unique,labels,trn_max_len=None)
+        print('Train dataset dims:',input_data.shape, targets.shape)
+    elif phase=='test':
+        if max_chars == trn_max_char:
+            input_data,targets,max_seq_len=transform_data(lst_novels,lst_chars_unique,labels=None,trn_max_len=trn_max_seq_len)
+        print('Test dataset dim:',input_data.shape)
+    return input_data,targets,max_chars,max_seq_len   
+    
+ def build_cnn(max_chars,class_num,max_seq_len):
+    model = Sequential()
+#     # input/char embedding layer
+    model.add(Embedding(max_chars, 32, input_length=max_seq_len, mask_zero=False))
+    # conv1D with 'relu'=non linear activation function ,kernel_size =5,no of feature maps=256
+    model.add(Conv1D(256, 5, activation='relu'))
+    #Max pool layer with kernel size=3
+    model.add(MaxPooling1D(3))
+    #Dropout layer
+    model.add(Dropout(0.25))
+    # conv1D with 'relu'=non linear activation function ,kernel_size =5,no of feature maps=256
+    model.add(Conv1D(256, 5, activation='relu'))
+    #Max pool layer with kernel size=3
+    model.add(MaxPooling1D(3))
+    #Dropout layer
+    model.add(Dropout(0.25))
+     # conv1D with 'relu'=non linear activation function ,kernel_size =3,no of feature maps=256
+    model.add(Conv1D(256, 3, activation='relu'))
+    #Max pool layer with kernel size=3
+    model.add(MaxPooling1D(3))
+    #Dropout layer
+    model.add(Dropout(0.25))
+    # fully-connected linear layers
+    model.add(Flatten()) #Flatten the output of convolutions to feed into linear/dense layers
+    #Dense layer with hidden size=500 and activation=relu
+    model.add(Dense(500, activation='relu'))
+    #Dropout layer
+    model.add(Dropout(0.25))
+    #Dense layer with hidden size=128 and activation=relu
+    model.add(Dense(128, activation='relu'))
+    #Dropout layer
+    model.add(Dropout(0.25))
+    # Dense layer with output nodes equal to number of classes
+    model.add(Dense(class_num))
+    #Softmax layer to calculate probabilities of outputs
+    model.add(Activation('softmax'))
+    
+    return model
+    
+    
+ def plot_summary(Summary):
+    '''
+    Function to plot loss and accuracy on training and validation dataset
+    '''
+    print(Summary.history.keys())
+    # summarize history for accuracy
+    plt.plot(Summary.history['acc'])
+    plt.plot(Summary.history['val_acc'])
+    plt.title('model accuracy')
+    plt.ylabel('accuracy')
+    plt.xlabel('epoch')
+    plt.legend(['train', 'test'], loc='upper left')
+    plt.show()
+    # summarize history for loss
+    plt.plot(Summary.history['loss'])
+    plt.plot(Summary.history['val_loss'])
+    plt.title('model loss')
+    plt.ylabel('loss')
+    plt.xlabel('epoch')
+    plt.legend(['train', 'test'], loc='upper left')
+    plt.show()
+     
+def train(train_path,target_path,weight_path,class_num):
+    '''
+    -Preprocess train data 
+    -Train the network on the dataset
+    -Save the model
+    
+    :param train_path: train dataset path
+    :param target_path: label txt path
+    :param weight_path: path to save weights
+    :param class_num: number of classes to predict
+    :return: 
+    '''
+    #read data
+    novels,labels = read_data(train_path,target_path,phase='train')
+    #pre-process data
+    input_data,targets,max_chars,max_seq_len = pre_process(novels,labels=labels,phase='train',trn_max_char=None,trn_max_seq_len=None)
+
+    #---------------------------------
+    # Building Model and training
+    #---------------------------------
+
+    #Build cnn model : max_chars =27,class_num=12(no of classes to predict)
+    print('3.Building model..........')
+    model = build_cnn(max_chars+1,class_num,max_seq_len)
+
+    batch_size = 200
+    epochs =24
+    lr=1e-3
+
+    #Optimizer =Adam ,loss function=categorical_crossentropy,metric=accuracy,learning_rate=1e-3
+    adam_optim = optimizers.Adam(lr=lr)
+    model.compile(loss='categorical_crossentropy', optimizer=adam_optim, metrics=['accuracy'])
+
+    #early_stopping with patience=10 epochs, if no improvement on val_loss
+    early_stopping = EarlyStopping(patience=15, verbose=1,monitor='val_loss', mode='min')
+    #save the model with best validation accuracy
+    model_checkpoint = ModelCheckpoint(filepath=weight_path, monitor='val_acc',mode='max',
+                                   verbose=1, 
+                                   save_best_only=True)
+    
+    print("3.Training model with batch_size:{},epochs:{},learning_rate:{}".format(batch_size,epochs,lr))
+    #fit the model on the train data with validation split as 0.2
+    Summary = model.fit(input_data, targets, 
+              batch_size=batch_size, 
+              epochs = epochs, 
+              verbose=1,
+              shuffle=True,
+              validation_split=0.2,
+              callbacks=[early_stopping,model_checkpoint])
+    
+    plot_summary(Summary) 
+    
+    print("4.Saving model..........")
+    model.json = model.to_json()
+     #Serializing/Saving the model object with weights
+    with open("data/cnnmodel.json", "w") as json_file:
+        json_file.write(model.json)
+        
+       
+    return json_file,max_chars,max_seq_len 
+
+
+#filepaths
+train_path= 'data/xtrain_obfuscated.txt'
+target_path = 'data/ytrain.txt'
+test_path = 'data/xtest_obfuscated.txt'
+weigth_path = 'data/best_weights.hdf5'
+
+#label_dictionary
+label_dict =  {0: "alice_in_wonderland", 1: "dracula", 2: "dubliners", 3: "great_expectations",
+                       4: "hard_times", 5: "huckleberry_finn", 6: "les_miserable", 7: "moby_dick",
+                       8: "oliver_twist", 9: "peter_pan", 10: "tale_of_two_cities", 11: "tom_sawyer"}
+#Train
+json_file,max_chars,max_seq_len = train(train_path,target_path,weigth_path,len(label_dict))
+
+
+def test(input_path,model_path,weight_path,train_max_char,train_max_seq_len):
+    #Read and preprocess test data
+    novels,_ = read_data(input_path,target_path=None,phase='test')
+    input_data,targets,_,_ = pre_process(novels,labels=None,phase='test',trn_max_char=train_max_char,trn_max_seq_len=train_max_seq_len)
+    
+    #Load trained model
+    print("3.Loading trained model..........")
+    json_file = open(model_path, 'r')
+    saved_model = json_file.read()
+    json_file.close()
+    saved_model = model_from_json(saved_model)
+    saved_model.load_weights(weight_path)
+    saved_model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
+    
+    print("4.Predicting outputs..........")
+    pred = saved_model.predict(input_data)
+    y_test = np.zeros(input_data.shape[0], dtype=np.int)
+    for i in range(input_data.shape[0]):
+        y_test[i] = np.argmax(pred[i])
+    np.savetxt('ytest.txt', [y_test],fmt='%i', delimiter='\n')
+    print('Length of test labels :',len(y_test))
+    print(y_test)
+    print("5.Saved Predictions..........") 
+    
+    #Test
+weight_path = 'data/best_weights.hdf5'
+json_file = "data/cnnmodel.json"
+test(test_path,json_file,weight_path,max_chars,max_seq_len)
+       
